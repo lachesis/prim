@@ -1,4 +1,5 @@
 use std::fs::File;
+use std::time::{SystemTime, UNIX_EPOCH};
 use std::time::Duration;
 use image::{RgbImage, Rgb, RgbaImage};
 use image::codecs::gif::{GifEncoder, Repeat};
@@ -10,6 +11,7 @@ use clap::Parser;
 
 const CELL: u32 = 40;
 const MAX_DIM: u32 = 800;
+const UNIX_J2000: u64 = 946728000; // 2000-01-01 12:00 UTC
 
 #[derive(Parser)]
 #[command(name = "prim")]
@@ -43,6 +45,9 @@ struct Args {
 
     #[arg(long, default_value_t = String::from("output.gif"))]
     output: String,
+
+    #[arg(long)]
+    time: Option<f64>,  // UTC hour (0-24), default = current time
 }
 
 struct Pt {
@@ -112,6 +117,98 @@ fn prim_mst(points: &[Pt], start: usize) -> Vec<(usize, usize)> {
     edges
 }
 
+fn sky_points(w: u32, h: u32, count: u32, lat_deg: f64, lon_deg: f64, time_hour: Option<f64>) -> Vec<Pt> {
+    let now_secs = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+    let today_start = now_secs - now_secs % 86400;
+    let hour = match time_hour {
+        Some(h) => h.max(0.0).min(24.0),
+        None => (now_secs % 86400) as f64 / 3600.0,
+    };
+    let unix_ts = today_start + (hour * 3600.0) as u64;
+
+    // Local Sidereal Time
+    let d_days = (unix_ts - UNIX_J2000) as f64 / 86400.0;
+    let gmst_deg = 280.46061837 + 360.98564736629 * d_days;
+    let lst_deg = (gmst_deg + lon_deg).rem_euclid(360.0);
+    let lat_rad = lat_deg.to_radians();
+
+    let data = include_bytes!("stars.bin");
+    let total = u32::from_le_bytes(data[0..4].try_into().unwrap()) as usize;
+
+    // Scan all stars brightness-first, collect visible ones
+    let mut above: Vec<(f64, f64)> = Vec::new();
+    for i in 0..total {
+        if above.len() >= count as usize {
+            break;
+        }
+
+        let off = 4 + i * 12;
+        let ra = f32::from_le_bytes(data[off..off + 4].try_into().unwrap()) as f64;
+        let dec = f32::from_le_bytes(data[off + 4..off + 8].try_into().unwrap()) as f64;
+
+        let ha_deg = (lst_deg - ra * 15.0).rem_euclid(360.0);
+        let ha_rad = ha_deg.to_radians();
+        let dec_rad = dec.to_radians();
+
+        let sin_alt = dec_rad.sin() * lat_rad.sin()
+            + dec_rad.cos() * lat_rad.cos() * ha_rad.cos();
+        if sin_alt <= 0.0 {
+            continue;
+        }
+
+        let alt_rad = sin_alt.asin();
+        let az_rad = (-ha_rad.sin() * dec_rad.cos()).atan2(
+            dec_rad.sin() * lat_rad.cos()
+                - dec_rad.cos() * lat_rad.sin() * ha_rad.cos(),
+        );
+
+        let r = alt_rad.cos();
+        let gx_f = w as f64 / 2.0 + (r * az_rad.sin()) * (w.min(h) as f64 * 0.45);
+        let gy_f = h as f64 / 2.0 + (-r * az_rad.cos()) * (w.min(h) as f64 * 0.45);
+
+        above.push((gx_f, gy_f));
+    }
+
+    // Place on grid with dedup
+    let mut occ = vec![vec![false; h as usize]; w as usize];
+    let mut pts = Vec::new();
+    for &(gx_f, gy_f) in &above {
+        let gx = gx_f.round() as i32;
+        let gy = gy_f.round() as i32;
+        if gx < 0 || gx >= w as i32 || gy < 0 || gy >= h as i32 {
+            continue;
+        }
+
+        let (fx, fy) = find_free(&mut occ, w, h, gx as u32, gy as u32);
+        occ[fx as usize][fy as usize] = true;
+        pts.push(Pt { gx: fx, gy: fy });
+    }
+    pts
+}
+
+fn find_free(occ: &[Vec<bool>], w: u32, h: u32, gx: u32, gy: u32) -> (u32, u32) {
+    if !occ[gx as usize][gy as usize] {
+        return (gx, gy);
+    }
+    for r in 1..(w.max(h)) {
+        for dx in -(r as i32)..=r as i32 {
+            for dy in -(r as i32)..=r as i32 {
+                if r > 1 && dx.abs() != r as i32 && dy.abs() != r as i32 {
+                    continue;
+                }
+                let nx = gx as i32 + dx;
+                let ny = gy as i32 + dy;
+                if nx >= 0 && nx < w as i32 && ny >= 0 && ny < h as i32
+                    && !occ[nx as usize][ny as usize]
+                {
+                    return (nx as u32, ny as u32);
+                }
+            }
+        }
+    }
+    (gx, gy)
+}
+
 fn main() {
     let args = Args::parse();
     let w = args.width;
@@ -123,7 +220,19 @@ fn main() {
         std::process::exit(1);
     }
 
-    let points = place_points(w, h, pts, args.seed);
+    let points = if args.seed == 4242 {
+        let lat = std::env::var("LAT").ok()
+            .and_then(|s| s.parse::<f64>().ok())
+            .unwrap_or(39.0);
+        let lon = std::env::var("LNG").ok()
+            .and_then(|s| s.parse::<f64>().ok())
+            .unwrap_or(-84.0);
+        let sp = sky_points(w, h, pts, lat, lon, args.time);
+        eprintln!("✨ secret sky mode (lat={} lon={}): {} stars", lat, lon, sp.len());
+        sp
+    } else {
+        place_points(w, h, pts, args.seed)
+    };
     let edge_count = points.len() - 1;
 
     // Scale rendering
