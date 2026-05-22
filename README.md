@@ -1,5 +1,7 @@
 prim — Prim's algorithm visualizer
 
+![example](example.gif)
+
 Build MST on random grid points, render animated GIF.
 
 Usage:
