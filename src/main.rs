@@ -220,13 +220,15 @@ fn main() {
         std::process::exit(1);
     }
 
-    let points = if args.seed == 4242 {
-        let lat = std::env::var("LAT").ok()
-            .and_then(|s| s.parse::<f64>().ok())
-            .unwrap_or(39.0);
-        let lon = std::env::var("LNG").ok()
-            .and_then(|s| s.parse::<f64>().ok())
-            .unwrap_or(-84.0);
+    let lat = std::env::var("LAT").ok()
+        .and_then(|s| s.parse::<f64>().ok())
+        .unwrap_or(39.0);
+    let lon = std::env::var("LNG").ok()
+        .and_then(|s| s.parse::<f64>().ok())
+        .unwrap_or(-84.0);
+    let secret = args.seed == 4242;
+
+    let points = if secret {
         let sp = sky_points(w, h, pts, lat, lon, args.time);
         eprintln!("✨ secret sky mode (lat={} lon={}): {} stars", lat, lon, sp.len());
         sp
@@ -266,29 +268,71 @@ fn main() {
     // Cache base frame (grid + points, no blue dot)
     let base = render_base(iw, ih, w, h, cell, margin, r, &points);
 
-    for rep in 0..args.repeats {
-        let start = rep as usize % points.len();
-        let edges = prim_mst(&points, start);
+    if secret && args.repeats > 1 {
+        // Time-lapse: each repeat advances time by 1 UTC hour
+        let base_hour = args.time.unwrap_or_else(|| {
+            let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+            (now % 86400) as f64 / 3600.0
+        });
+        for rep in 0..args.repeats {
+            let hour = (base_hour + rep as f64).min(24.0);
+            let rp = sky_points(w, h, pts, lat, lon, Some(hour));
+            if rp.is_empty() { continue; }
+            let rec = rp.len() - 1;
 
-        let total_len: f64 = edges.iter().map(|&(i, j)| {
-            let dx = points[i].gx as f64 - points[j].gx as f64;
-            let dy = points[i].gy as f64 - points[j].gy as f64;
-            (dx * dx + dy * dy).sqrt()
-        }).sum();
-        println!("start ({},{})  total edge len {:.2}", points[start].gx, points[start].gy, total_len);
+            let rfs = if args.step == 0 {
+                let fps = rec as f64 / args.runtime.max(1) as f64;
+                if fps <= 30.0 { 1 } else { (fps / 30.0).ceil() as u32 }
+            } else { args.step };
+            let rf = (rec as u32).div_ceil(rfs).max(1) as usize;
+            let red = Delay::from_saturating_duration(
+                Duration::from_millis(args.runtime as u64 * 1000 / rf as u64));
 
-        let mut cur = base.clone();
-        draw_dot(&mut cur, pcx(points[start].gx), pcy(points[start].gy), r, Rgb([0, 0, 255]));
-        encode_frame(&mut encoder, &cur, init_delay);
+            let edges = prim_mst(&rp, 0);
+            let total_len: f64 = edges.iter().map(|&(i, j)| {
+                let dx = rp[i].gx as f64 - rp[j].gx as f64;
+                let dy = rp[i].gy as f64 - rp[j].gy as f64;
+                (dx * dx + dy * dy).sqrt()
+            }).sum();
+            println!("UTC {:.0}  {} pts  {} edges  len {:.2}", hour, rp.len(), rec, total_len);
 
-        for (idx, &(i, j)) in edges.iter().enumerate() {
-            draw_line(&mut cur, pcx(points[i].gx), pcy(points[i].gy), pcx(points[j].gx), pcy(points[j].gy), Rgb([255, 0, 0]));
-            if idx as u32 % frame_step == 0 {
-                encode_frame(&mut encoder, &cur, edge_delay);
+            let rb = render_base(iw, ih, w, h, cell, margin, r, &rp);
+            let mut cur = rb;
+            draw_dot(&mut cur, pcx(rp[0].gx), pcy(rp[0].gy), r, Rgb([0, 0, 255]));
+            encode_frame(&mut encoder, &cur, init_delay);
+            for (idx, &(i, j)) in edges.iter().enumerate() {
+                draw_line(&mut cur, pcx(rp[i].gx), pcy(rp[i].gy), pcx(rp[j].gx), pcy(rp[j].gy), Rgb([255, 0, 0]));
+                if idx as u32 % rfs == 0 {
+                    encode_frame(&mut encoder, &cur, red);
+                }
             }
+            encode_frame(&mut encoder, &cur, hold_delay);
         }
+    } else {
+        for rep in 0..args.repeats {
+            let start = rep as usize % points.len();
+            let edges = prim_mst(&points, start);
 
-        encode_frame(&mut encoder, &cur, hold_delay);
+            let total_len: f64 = edges.iter().map(|&(i, j)| {
+                let dx = points[i].gx as f64 - points[j].gx as f64;
+                let dy = points[i].gy as f64 - points[j].gy as f64;
+                (dx * dx + dy * dy).sqrt()
+            }).sum();
+            println!("start ({},{})  total edge len {:.2}", points[start].gx, points[start].gy, total_len);
+
+            let mut cur = base.clone();
+            draw_dot(&mut cur, pcx(points[start].gx), pcy(points[start].gy), r, Rgb([0, 0, 255]));
+            encode_frame(&mut encoder, &cur, init_delay);
+
+            for (idx, &(i, j)) in edges.iter().enumerate() {
+                draw_line(&mut cur, pcx(points[i].gx), pcy(points[i].gy), pcx(points[j].gx), pcy(points[j].gy), Rgb([255, 0, 0]));
+                if idx as u32 % frame_step == 0 {
+                    encode_frame(&mut encoder, &cur, edge_delay);
+                }
+            }
+
+            encode_frame(&mut encoder, &cur, hold_delay);
+        }
     }
 
     println!("{}  {}x{}  {} pts  {} edges  seed {}  repeats {}", args.output, w, h, pts, edge_count, args.seed, args.repeats);

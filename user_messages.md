@@ -53,3 +53,24 @@ still kinda slow... let's add a "--step" function. 1 means draw every edge, 10 m
 
 
 add a --output option, default to output.gif
+
+
+add a secret feature - if the given seed is 4242, instead of generating a random starting grid, grab the $points brightest stars as visible from the sky above 39°N 84°W, project them onto the grid, and draw the MST between them. probably best to just build in the grid positions. you can write python or curl or whatever to grab the positions and project them to the grid.
+
+
+https://codeberg.org/astronexus/hyg/media/branch/main/data/hyg/CURRENT/hyg_v42.csv.gz
+
+
+so tell me this - does this look like what i'd see if i looked up at any given time? or is it a different projection?
+
+
+yes, switch to real-time sky projection. accept --time, default to current time. also, read LAT and LNG from env vars if present (default to the given existing values). create a python script to rebuild star catalog which works at any lat/lng. limit to stars with magnitude brighter than 8.
+
+
+update repeats arg for secret star mode only so that it will instead generate a different grid each time, one hour later for each repeat. so e.g. --seed 4242 --time 2 --repeats 5 would generate grids for hours 2, 3, 4, 5, 6 all in same gif
+
+
+in star mode, don't start from random place, start from brightest visible star (ignore Sol tho)
+
+
+update user_messages.md - write each message that _i've_ written (not yours or tool responses) with two newlines between them. you can look at $HOME/.claude/projects/*-prim/06b6fa4f-54e6-463c-8a30-59c3cc8bb739.jsonl
