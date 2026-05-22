@@ -37,6 +37,12 @@ struct Args {
 
     #[arg(long, default_value_t = 1)]
     repeats: u32,
+
+    #[arg(long, default_value_t = 0)]
+    step: u32,
+
+    #[arg(long, default_value_t = String::from("output.gif"))]
+    output: String,
 }
 
 struct Pt {
@@ -130,13 +136,21 @@ fn main() {
     let pcx = |gx: u32| margin + gx * cell + cell / 2;
     let pcy = |gy: u32| margin + gy * cell + cell / 2;
 
+    // Frame stepping
+    let frame_step = if args.step == 0 {
+        let natural_fps = edge_count as f64 / args.runtime.max(1) as f64;
+        if natural_fps <= 30.0 { 1 } else { (natural_fps / 30.0).ceil() as u32 }
+    } else {
+        args.step
+    };
+    let frames = (edge_count as u32).div_ceil(frame_step).max(1) as usize;
+
     // Delays
     let init_delay = Delay::from_saturating_duration(Duration::from_millis(args.start_time as u64 * 1000));
-    let per_edge = (edge_count).max(1) as u64;
-    let edge_delay = Delay::from_saturating_duration(Duration::from_millis(args.runtime as u64 * 1000 / per_edge));
+    let edge_delay = Delay::from_saturating_duration(Duration::from_millis(args.runtime as u64 * 1000 / frames as u64));
     let hold_delay = Delay::from_saturating_duration(Duration::from_millis(args.hold_time as u64 * 1000));
 
-    let out = File::create("output.gif").expect("create output.gif failed");
+    let out = File::create(&args.output).expect("create output.gif failed");
     let mut encoder = GifEncoder::new(out);
     encoder.set_repeat(Repeat::Infinite).expect("set repeat failed");
 
@@ -158,15 +172,17 @@ fn main() {
         draw_dot(&mut cur, pcx(points[start].gx), pcy(points[start].gy), r, Rgb([0, 0, 255]));
         encode_frame(&mut encoder, &cur, init_delay);
 
-        for &(i, j) in &edges {
+        for (idx, &(i, j)) in edges.iter().enumerate() {
             draw_line(&mut cur, pcx(points[i].gx), pcy(points[i].gy), pcx(points[j].gx), pcy(points[j].gy), Rgb([255, 0, 0]));
-            encode_frame(&mut encoder, &cur, edge_delay);
+            if idx as u32 % frame_step == 0 {
+                encode_frame(&mut encoder, &cur, edge_delay);
+            }
         }
 
         encode_frame(&mut encoder, &cur, hold_delay);
     }
 
-    println!("output.gif  {}x{}  {} pts  {} edges  seed {}  repeats {}", w, h, pts, edge_count, args.seed, args.repeats);
+    println!("{}  {}x{}  {} pts  {} edges  seed {}  repeats {}", args.output, w, h, pts, edge_count, args.seed, args.repeats);
 }
 
 fn encode_frame(encoder: &mut GifEncoder<File>, img: &RgbImage, delay: Delay) {

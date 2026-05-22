@@ -46,3 +46,10 @@ extract all of _my_ messages (user messages) from this chat. write them to "user
 
 
 ok what can we do to make this faster?
+
+
+still kinda slow... let's add a "--step" function. 1 means draw every edge, 10 means draw every 10th, default to 0 which is magic value that means - draw every frame if we can hit the goal time or limit to 30 fps
+  ./target/release/prim --seed 42 --width 128 --height 128 --points $[128*128/5]
+
+
+add a --output option, default to output.gif
