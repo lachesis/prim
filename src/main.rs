@@ -64,26 +64,41 @@ fn place_points(w: u32, h: u32, count: u32, seed: u64) -> Vec<Pt> {
 fn prim_mst(points: &[Pt], start: usize) -> Vec<(usize, usize)> {
     let n = points.len();
     if n < 2 { return vec![]; }
+
+    // closest[i] = (nearest MST-node to i, squared-distance)
+    let mut closest = vec![(0, u64::MAX); n];
     let mut in_mst = vec![false; n];
     let mut edges = Vec::new();
+
     in_mst[start] = true;
+    for j in 0..n {
+        if j == start { continue; }
+        let dx = points[start].gx as i64 - points[j].gx as i64;
+        let dy = points[start].gy as i64 - points[j].gy as i64;
+        closest[j] = (start, (dx * dx + dy * dy) as u64);
+    }
+
     while edges.len() < n - 1 {
-        let mut best: Option<(usize, usize, u64)> = None;
-        for i in 0..n {
-            if !in_mst[i] { continue; }
-            for j in 0..n {
-                if in_mst[j] { continue; }
-                let dx = points[i].gx as i64 - points[j].gx as i64;
-                let dy = points[i].gy as i64 - points[j].gy as i64;
+        // Find non-MST node with smallest closest distance
+        let best = (0..n)
+            .filter(|&j| !in_mst[j])
+            .min_by_key(|&j| closest[j].1)
+            .filter(|&j| closest[j].1 < u64::MAX);
+
+        if let Some(j) = best {
+            in_mst[j] = true;
+            edges.push((closest[j].0, j));
+
+            // Update distances for remaining nodes
+            for k in 0..n {
+                if in_mst[k] { continue; }
+                let dx = points[j].gx as i64 - points[k].gx as i64;
+                let dy = points[j].gy as i64 - points[k].gy as i64;
                 let d = (dx * dx + dy * dy) as u64;
-                if best.map_or(true, |(_, _, bd)| d < bd) {
-                    best = Some((i, j, d));
+                if d < closest[k].1 {
+                    closest[k] = (j, d);
                 }
             }
-        }
-        if let Some((i, j, _)) = best {
-            in_mst[j] = true;
-            edges.push((i, j));
         } else {
             break;
         }
@@ -125,6 +140,9 @@ fn main() {
     let mut encoder = GifEncoder::new(out);
     encoder.set_repeat(Repeat::Infinite).expect("set repeat failed");
 
+    // Cache base frame (grid + points, no blue dot)
+    let base = render_base(iw, ih, w, h, cell, margin, r, &points);
+
     for rep in 0..args.repeats {
         let start = rep as usize % points.len();
         let edges = prim_mst(&points, start);
@@ -136,7 +154,7 @@ fn main() {
         }).sum();
         println!("start ({},{})  total edge len {:.2}", points[start].gx, points[start].gy, total_len);
 
-        let mut cur = render_base(iw, ih, w, h, cell, margin, r, &points);
+        let mut cur = base.clone();
         draw_dot(&mut cur, pcx(points[start].gx), pcy(points[start].gy), r, Rgb([0, 0, 255]));
         encode_frame(&mut encoder, &cur, init_delay);
 
@@ -194,12 +212,14 @@ fn render_base(iw: u32, ih: u32, w: u32, h: u32, cell: u32, margin: u32, r: i32,
 fn draw_circle(img: &mut RgbImage, cx: u32, cy: u32, r: i32, s: i32, col: Rgb<u8>) {
     let cx = cx as i32;
     let cy = cy as i32;
-    let lo = r - s / 2;
+    let lo = (r - s / 2).max(0);
     let hi = r + s / 2;
+    let lo_sq = lo * lo;
+    let hi_sq = hi * hi;
     for dy in -hi..=hi {
         for dx in -hi..=hi {
-            let d = ((dx * dx + dy * dy) as f64).sqrt().round() as i32;
-            if d >= lo && d <= hi {
+            let d_sq = dx * dx + dy * dy;
+            if d_sq >= lo_sq && d_sq <= hi_sq {
                 let px = cx + dx;
                 let py = cy + dy;
                 if px >= 0 && py >= 0 && px < img.width() as i32 && py < img.height() as i32 {

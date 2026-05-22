@@ -43,3 +43,6 @@ construct a readme, git init, add relevant files, git commit -am "initial commit
 
 
 extract all of _my_ messages (user messages) from this chat. write them to "user_messages.md" with three newlines between each. don't include your messages or toolcalls.
+
+
+ok what can we do to make this faster?
